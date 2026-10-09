@@ -3,7 +3,8 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { isRealDate } from "./deadline.ts";
 import * as scripts from "./scripts.ts";
-import { ReviewError } from "./scripts.ts";
+import { ReviewError, STATUSES } from "./scripts.ts";
+import type { Actor } from "./scripts.ts";
 
 type Clock = { now?: () => Date };
 type Body = Record<string, unknown>;
@@ -34,7 +35,7 @@ function dueDate(body: Body): string {
 }
 
 export function createApp(db: DatabaseSync, { now = () => new Date() }: Clock = {}) {
-  const app = new Hono();
+  const app = new Hono<{ Variables: { actor: Actor } }>();
 
   app.onError((err, c) => {
     if (err instanceof ReviewError) return c.json({ error: err.message, code: err.code }, err.status);
@@ -42,29 +43,45 @@ export function createApp(db: DatabaseSync, { now = () => new Date() }: Clock = 
     return c.json({ error: "Erro interno.", code: "internal_error" }, 500);
   });
 
+  app.use("/scripts*", async (c, next) => {
+    const actor = scripts.resolveActor(db, c.req.header("x-actor"));
+    if (!actor) throw new ReviewError(401, "actor_required", "Informe um X-Actor válido (brand:<id> ou creator:<id>).");
+    c.set("actor", actor);
+    await next();
+  });
+
   app.post("/scripts", async (c) => {
     const body = await readBody(c);
     const title = text(body, "title", "title_required", "O título é obrigatório.");
     const content = text(body, "content", "content_required", "O conteúdo é obrigatório.");
-    return c.json(scripts.createScript(db, title, content, now()), 201);
+    const campaignId = text(body, "campaign_id", "campaign_id_required", "A campanha é obrigatória.");
+    return c.json(scripts.createScript(db, c.get("actor"), campaignId, title, content, now()), 201);
   });
 
-  app.get("/scripts/:id", (c) => c.json(scripts.getScript(db, c.req.param("id"))));
+  app.get("/scripts", (c) => {
+    const status = c.req.query("status");
+    if (status !== undefined && !STATUSES.includes(status)) {
+      throw new ReviewError(422, "status_invalid", `O status deve ser um de: ${STATUSES.join(", ")}.`);
+    }
+    return c.json({ scripts: scripts.listScripts(db, c.get("actor"), status, c.req.query("campaign_id")) });
+  });
+
+  app.get("/scripts/:id", (c) => c.json(scripts.getScript(db, c.req.param("id"), c.get("actor"))));
 
   app.post("/scripts/:id/change-requests", async (c) => {
     const body = await readBody(c);
     const reason = text(body, "reason", "reason_required", "O motivo da alteração é obrigatório.");
-    const view = scripts.requestChanges(db, c.req.param("id"), reason, dueDate(body), now());
+    const view = scripts.requestChanges(db, c.req.param("id"), c.get("actor"), reason, dueDate(body), now());
     return c.json(view, 201);
   });
 
   app.post("/scripts/:id/versions", async (c) => {
     const body = await readBody(c);
     const content = text(body, "content", "content_required", "O conteúdo é obrigatório.");
-    return c.json(scripts.submitVersion(db, c.req.param("id"), content, now()), 201);
+    return c.json(scripts.submitVersion(db, c.req.param("id"), c.get("actor"), content, now()), 201);
   });
 
-  app.post("/scripts/:id/approve", (c) => c.json(scripts.approve(db, c.req.param("id"), now())));
+  app.post("/scripts/:id/approve", (c) => c.json(scripts.approve(db, c.req.param("id"), c.get("actor"), now())));
 
   return app;
 }

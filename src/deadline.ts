@@ -1,14 +1,12 @@
-export const TIMEZONE = "America/Sao_Paulo";
+const formatters = new Map<string, Intl.DateTimeFormat>();
 
-const formatter = new Intl.DateTimeFormat("en-CA", {
-  timeZone: TIMEZONE,
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-});
-
-function todayInSaoPaulo(now: Date): string {
-  return formatter.format(now);
+function today(now: Date, timeZone: string): string {
+  let f = formatters.get(timeZone);
+  if (!f) {
+    f = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" });
+    formatters.set(timeZone, f);
+  }
+  return f.format(now);
 }
 
 export function isRealDate(value: string): boolean {
@@ -17,7 +15,7 @@ export function isRealDate(value: string): boolean {
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value;
 }
 
-// O dia do prazo ainda vale até 23:59:59.999 em São Paulo.
-export function isDeadlineValid(dueDate: string, now: Date): boolean {
-  return dueDate >= todayInSaoPaulo(now);
+// O dia do prazo ainda vale até 23:59:59.999 no fuso da marca.
+export function isDeadlineValid(dueDate: string, now: Date, timeZone: string): boolean {
+  return dueDate >= today(now, timeZone);
 }
